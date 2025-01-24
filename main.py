@@ -35,84 +35,45 @@ def get_organization_id(organization_name):
 
 def fetch_contributions(username, organization_name):
     organization_id = get_organization_id(organization_name)
-    all_contributions = {
-        "data": {
-            "user": {
-                "contributionsCollection": {
-                    "pullRequestContributions": {"nodes": []},
-                    "issueContributions": {"nodes": []},
-                    "commitContributionsByRepository": []
-                }
-            }
-        }
-    }
-
-    # Query with pagination support and additional PR states
     query = """
-    query($username: String!, $organizationID: ID!, $prCursor: String) {
+    query($username: String!, $organizationID: ID!, $searchQuery: String!, $cursor: String) {
       user(login: $username) {
         contributionsCollection(organizationID: $organizationID) {
           totalPullRequestContributions
-          pullRequestContributions(first: 100, after: $prCursor, orderBy: {direction: DESC}) {
-            pageInfo {
-              hasNextPage
-              endCursor
-            }
-            totalCount
-            nodes {
-              pullRequest {
-                title
-                url
-                state
-                repository {
-                  name
-                }
-                createdAt
-                merged
-                closed
-              }
-            }
-          }
-          issueContributions(first: 100) {
-            nodes {
-              issue {
-                title
-                url
-                state
-                repository {
-                  name
-                }
-                createdAt
-              }
-            }
-          }
-          commitContributionsByRepository {
+        }
+      }
+      search(query: $searchQuery, type: ISSUE, first: 100, after: $cursor) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          ... on PullRequest {
+            title
+            url
+            state
             repository {
               name
             }
-            contributions(first: 100) {
-              nodes {
-                commitCount
-                occurredAt
-                resourcePath
-                url
-              }
-            }
+            createdAt
+            merged
+            closed
           }
         }
       }
     }
     """
 
-    pr_cursor = None
-    has_more_prs = True
-    total_prs_fetched = 0
+    search_query = f"author:{username} org:{organization_name} is:pr"
+    cursor = None
+    all_prs = []
 
-    while has_more_prs:
+    while True:
         variables = {
             "username": username,
             "organizationID": organization_id,
-            "prCursor": pr_cursor
+            "searchQuery": search_query,
+            "cursor": cursor
         }
 
         response = requests.post(GITHUB_API_URL, json={"query": query, "variables": variables}, headers=HEADERS)
@@ -122,31 +83,29 @@ def fetch_contributions(username, organization_name):
         if "errors" in data:
             raise ValueError(f"GitHub API Error: {data['errors']}")
 
-        current_data = data["data"]["user"]["contributionsCollection"]
+        search_results = data["data"]["search"]
+        all_prs.extend(search_results["nodes"])
+        print(f"Fetched {len(all_prs)} PRs so far...")
 
-        # Print total expected PRs
-        if total_prs_fetched == 0:
-            print(f"Expected total PRs: {current_data['totalPullRequestContributions']}")
+        if not search_results["pageInfo"]["hasNextPage"]:
+            break
 
-        # Process and count PRs
-        pr_data = current_data["pullRequestContributions"]
-        current_batch = pr_data["nodes"]
-        all_contributions["data"]["user"]["contributionsCollection"]["pullRequestContributions"]["nodes"].extend(current_batch)
-        total_prs_fetched += len(current_batch)
-        print(f"Fetched {total_prs_fetched} PRs so far...")
+        cursor = search_results["pageInfo"]["endCursor"]
 
-        has_more_prs = pr_data["pageInfo"]["hasNextPage"]
-        pr_cursor = pr_data["pageInfo"]["endCursor"] if has_more_prs else None
-
-        # Store other contribution data only once
-        if not all_contributions["data"]["user"]["contributionsCollection"]["issueContributions"]["nodes"]:
-            all_contributions["data"]["user"]["contributionsCollection"]["issueContributions"]["nodes"] = current_data["issueContributions"]["nodes"]
-
-        if not all_contributions["data"]["user"]["contributionsCollection"]["commitContributionsByRepository"]:
-            all_contributions["data"]["user"]["contributionsCollection"]["commitContributionsByRepository"] = current_data["commitContributionsByRepository"]
-
-    print(f"Total PRs fetched: {total_prs_fetched}")
-    return all_contributions
+    # Structure the response to match expected format
+    return {
+        "data": {
+            "user": {
+                "contributionsCollection": {
+                    "pullRequestContributions": {
+                        "nodes": [{"pullRequest": pr} for pr in all_prs]
+                    },
+                    "issueContributions": {"nodes": []},
+                    "commitContributionsByRepository": []
+                }
+            }
+        }
+    }
 
 def process_contributions(data):
     contributions = []
